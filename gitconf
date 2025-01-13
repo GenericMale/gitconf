@@ -1,0 +1,180 @@
+#!/bin/sh
+# Licensed under the EUPL-1.2-or-later
+
+git_dir="${XDG_DATA_HOME:-$HOME/.local/share}/gitconf"
+work_tree="${GITCONF_WORKTREE:-/}"
+facl_file="${GITCONF_ACL_FILENAME:-.gitfacl}"
+
+# Display usage information
+usage() {
+	cat <<- _EOF_
+usage: gitconf [-h | --help] <command> [<args>]
+
+Git wrapper to version system configuration and user dotfiles.
+
+File permissions and ownership is tracked in a ACL file and restored on clone.
+
+Special git(hub) files like the README, .gitattributes, LICENSE etc
+are not checked out but can be modified using the 'edit' command.
+
+The working tree can be changed by setting the GITCONF_WORKTREE env var.
+By default / is used, which will use sudo to restore files.
+If GITCONF_WORKTREE is set to a user writeable director (e.g. \$HOME),
+no privilege escalation is required.
+        
+In addition to the regular Git functionality, the following commands are provided:
+    tracked         Get absolute path of all files in the index.
+    untracked       List modified system configuration files not yet in the index.
+    updateacl       Manually force an update of the ACL file.
+    restoreacl      Restore file permissions and ownership from the ACL file in the repo.
+    edit <file>     Open a repository file in the default editor.
+                    The file may or may not be in the working tree.
+_EOF_
+}
+
+# Execute git commands with custom GIT_DIR and WORK_TREE
+_git() {
+    git --git-dir "$git_dir" --work-tree "$work_tree" "$@" || { echo "==> ERROR: git command failed"; exit 1; }
+}
+
+# Prepare the repo, enable sparse checkout and exclude special git(hub) files and our ACL file
+prepare() {
+    local sparse_files=(
+        "/*"
+        "!$facl_file"
+        "!.gitignore"
+        "!.gitattributes"
+        "!.gitmodules"
+        "!.mailmap"
+        "!.github/"
+        "!docs/"
+        "!README*"
+        "!CHANGELOG*"
+        "!LICENSE*"
+        "!SUPPORT*"
+        "!SECURITY*"
+        "!CODE_OF_CONDUCT*"
+        "!CONTRIBUTING*"
+        "!CONTRIBUTORS*"
+        "!AUTHORS*"
+        "!ACKNOWLEDGMENTS*"
+        "!CODEOWNERS"
+        "!ISSUE_TEMPLATE"
+        "!ISSUE_TEMPLATE/"
+        "!PULL_REQUEST_TEMPLATE"
+        "!CITATION*"
+        "!CNAME"
+    )
+    printf "%s\n" "${sparse_files[@]}" > "$git_dir/info/sparse-checkout"
+    _git config core.sparseCheckout true
+    _git config status.showUntrackedFiles no
+    _git config push.autoSetupRemote true
+}
+
+# Get absolute path of files in the index
+tracked() {
+    _git ls-files --full-name :/ | sed "s|^|$work_tree|" | sort -u
+}
+
+# List user modified and created configuration files not yet in the index (uses pacman and therefore is arch specific)
+untracked() {
+    # files in /etc not owned by any package
+    local created=$(find /etc -type f -print0 2>/dev/null | xargs -0 pacman -Qo 2>&1 | grep -Po "No package owns \K.*")
+
+    # modified files from packages
+    local modified=$(pacman -Qkkq | cut -d' ' -f2)
+
+    # modified & created files not yet indexed
+    local untracked=$(comm -23 <(echo -e "$created\n$modified" | sort -u) <(tracked))
+
+    # print only regular, readable files
+    while IFS= read -r file; do
+        [[ -f "$file" && -r "$file" && ! -L "$file" ]] && echo "$file"
+    done <<<"$untracked"
+}
+
+# Update ACL file directly in the index
+updateacl() {
+    local acl="$(tracked | getfacl -p - 2> /dev/null)"
+    _git update-index --add --cacheinfo "100644,$(_git hash-object -w --stdin <<<"$acl"),$facl_file"
+}
+
+# Restore permissions and ownership from ACL file
+restoreacl() {
+    local acl="$(_git show :"$facl_file")"
+
+    # check if we need sudo to update file permissions in the worktree
+    [[ -O "$work_tree" ]] && \
+        setfacl --restore=- <<<"$acl" || \
+        sudo -E setfacl --restore=- <<<"$acl"
+}
+
+# Initialize a new repository and (if provided) add the remote repo
+init() {
+    local remote_url="$1"
+
+    git init --bare "$git_dir"
+    prepare
+    _git branch -M main
+    [ -n "$remote_url" ] && _git remote add origin "$remote_url"
+}
+
+# Clone an existing repository and restore the config
+clone() {
+    local remote_url="$1"
+
+    git clone --bare "$remote_url" "$git_dir"
+    prepare
+
+    # check if we need sudo to write to the worktree
+    [[ -O "$work_tree" ]] && \
+        _git checkout || \
+        sudo -E git --git-dir "$git_dir" --work-tree "$work_tree" checkout
+
+    restoreacl
+}
+
+# Open and edit a repo file which may or may not be in the worktree (see sparse_files)
+edit() {
+    local filename="$1"
+    local tmp_file="$(mktemp)"
+
+    # write the file content to the temp file but don't fail if the file doesn't exist yet
+    git --git-dir "$git_dir" show :"$filename" 2> /dev/null > "$tmp_file"
+
+    # open the temp file in the preferred editor
+    ${EDITOR:-vim} "$tmp_file"
+
+    # update the file directly in the index
+    _git update-index --add --cacheinfo "100644,$(_git hash-object -w "$tmp_file"),$filename"
+
+    # run a checkout to reflect changes in the worktree (if the file is not excluded in the sparse config)
+    _git checkout --quiet
+
+    rm "$tmp_file"
+}
+
+# Get the command from the first argument
+if [ -n "$1" ]; then
+    cmd="$1"
+    shift
+else
+    usage
+    exit
+fi
+
+case $cmd in
+    -h|--help|help)
+        usage
+        ;;
+    init|clone|edit|tracked|untracked|updateacl|restoreacl)
+        $cmd "$@"
+        ;;
+    add|rm|mv|update-index|reset|restore)
+        # update the ACL if the indexed file list (possibly) changed
+        _git $cmd "$@"
+        updateacl
+        ;;
+    *)
+        _git $cmd "$@"
+esac
