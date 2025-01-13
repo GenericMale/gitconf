@@ -1,5 +1,6 @@
 pkgname=gitconf-git
-_pkgname=gitconf
+_pkgname=${pkgname%-git}
+pkgver=r1.3be1817
 pkgrel=1
 pkgdesc="git wrapper to version system configuration and dotfiles"
 url="https://github.com/GenericMale/gitconf"
