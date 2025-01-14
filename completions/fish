@@ -1,8 +1,7 @@
 # Licensed under the EUPL-1.2-or-later
 
 set -q XDG_DATA_HOME; or set -l XDG_DATA_HOME $HOME/.local/share
-set -q GITCONF_WORKTREE; or set -l GITCONF_WORKTREE "/"
-complete -c gitconf -w "git --git-dir='$XDG_DATA_HOME/gitconf' --work-tree='$GITCONF_WORKTREE'"
+complete -c gitconf -w "git --git-dir='$XDG_DATA_HOME/gitconf'"
 
 complete -c gitconf -a tracked -d "Get absolute path of all files in the index"
 complete -c gitconf -a untracked -d "List modified system config files not yet in index"
