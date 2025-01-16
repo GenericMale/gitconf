@@ -82,7 +82,7 @@ untracked() {
     local created=$(find /etc -type f -print0 2>/dev/null | xargs -0 pacman -Qo 2>&1 | grep -Po "No package owns \K.*")
 
     # modified files from packages
-    local modified=$(pacman -Qkkq | cut -d' ' -f2)
+    local modified=$(pacman -Qkk 2>/dev/null | sed -e 's/^[^/]*//' -e 's/ (.*)$//')
 
     # modified & created files not yet indexed
     local untracked=$(comm -23 <(echo -e "$created\n$modified" | sort -u) <(tracked))
